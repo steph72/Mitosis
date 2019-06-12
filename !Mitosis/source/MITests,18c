@@ -1,0 +1,44 @@
+require ("MIBoard")
+require ("MISheldon")
+
+function boardTest()
+  local boardSize = 7
+  local testBoard = MIBoard:new(boardSize,boardSize)
+  local testSheldon = MISheldon:new(testBoard)
+  local auto=false
+  testBoard:setBoardEntry(1,1,1)
+  testBoard:setBoardEntry(1,boardSize,1)
+  testBoard:setBoardEntry(boardSize,boardSize,2)
+  testBoard:setBoardEntry(boardSize,1,2)
+  repeat
+    if (not auto) then
+      print (testBoard:description())
+      io.write ("x0 y0 x1 y1 (or 'end' or 'auto'): ")
+      move = io.read()
+      coords = {}
+      for i in string.gmatch(move,"%S+") do
+        table.insert(coords,tonumber(i))
+      end
+    else
+      coords = {"auto"}
+      print (testBoard:description())
+    end
+    if (move=="auto") then
+      auto=true
+      move=""
+    end
+    if (move~="end" and #coords==4) then
+      testBoard:moveEntity(coords[1],coords[2],coords[3],coords[4],nil,nil)
+      print (testBoard:description())
+    else
+      sheldonMove = testSheldon:bestMoveForPlayer(1)
+      testBoard:moveEntity(sheldonMove.from.x,sheldonMove.from.y,sheldonMove.to.x,sheldonMove.to.y,nil,nil)
+      print ("Sheldon 1 moves from "..sheldonMove.from.x..", "..sheldonMove.from.y.." to "..sheldonMove.to.x..", "..sheldonMove.to.y)
+    end
+    sheldonMove = testSheldon:bestMoveForPlayer(2)
+    print ("Sheldon 2 moves from "..sheldonMove.from.x..", "..sheldonMove.from.y.." to "..sheldonMove.to.x..", "..sheldonMove.to.y)
+    testBoard:moveEntity(sheldonMove.from.x,sheldonMove.from.y,sheldonMove.to.x,sheldonMove.to.y,nil,nil)
+  until (move=="end")
+end
+
+boardTest()

@@ -1,0 +1,12 @@
+How To Play
+===========
+
+Your goal is simple: End the game with more cells on the board than your opponent. To do so, you have to make sure that your cells *reproduce*. There are two different ways to achieve this:
+
+1) If there's an empty space beside your cell (diagonal also counts!), you can jump there to split the cell in two seperate cells. That's called mitosis.
+
+2) If you jump beside one or more cells of another colour, you'll *infect* those cells, effectively making them yours
+
+You may also leap over one empty space (again, diagonal also counts). When doing so, your cell doesn't reproduce, but it may still infect other cells.
+
+Have fun!

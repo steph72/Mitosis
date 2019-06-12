@@ -1,0 +1,24 @@
+echo ----------------------
+echo -- building mitosis --
+echo ----------------------
+echo
+
+set absolua$dir <lua570$dir>.RiscLua.Utilities.!Absolua
+set test$path <Obey$dir>.
+dir <Obey$dir>
+ifthere !RunImage then delete !RunImage
+
+echo (1) linking & precompiling...
+lua test:link test:out test:linkfile
+
+echo (2) compiling and stripping debug symbols...
+luac570 -s -o tempOut out
+
+echo (3) doing absolua magic...
+/ <absolua$dir>.glue <absolua$dir>.srlua tempOut !RunImage
+ifthere !RunImage then settype !RunImage FF8
+
+echo (4) cleaning up...
+ifthere tempOut then delete tempOut
+ifthere out then delete out
+

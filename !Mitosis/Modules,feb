@@ -1,0 +1,8 @@
+RMENSURE Menu  0.00  RMLOAD System:modules.toolbox.menu
+RMENSURE Menu  0.24  ERROR You need menu 0.24 or later
+RMENSURE IconBar  0.00  RMLOAD System:modules.toolbox.iconbar
+RMENSURE IconBar  1.12  ERROR You need IconBar 1.12 or later
+RMENSURE ProgInfo  0.00  RMLOAD System:modules.toolbox.proginfo
+RMENSURE ProgInfo  0.09  ERROR You need ProgInfo 0.09 or later
+RMENSURE ToolBox  0.00  RMLOAD System:modules.toolbox.toolbox
+RMENSURE ToolBox  1.33  ERROR You need Toolbox 1.33 or later to

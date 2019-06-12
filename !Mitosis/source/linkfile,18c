@@ -1,0 +1,15 @@
+-- linkfile
+
+=> { main = "test:MIMain",
+            "lua570:wimp.task",
+            "lua570:wimp.tbox",
+            "test:SKReporter",
+            "test:MIBoard",
+            "test:MISheldon"
+   },
+   { "wimp.task",
+     "wimp.tbox",
+     "SKReporter",
+     "MIBoard",
+     "MISheldon" }
+

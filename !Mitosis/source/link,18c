@@ -1,0 +1,33 @@
+ --[[ GCW 2013/11/25 Based on the Lua Compiler in Lua; see
+ http://lua-users.org/wiki/LuaCompilerInLua
+
+ usage:  link outfile linkfile
+
+ Creates a precompiled file "outfile" that preloads all the
+ files listed in the textfile "linkfile" and runs the file "main".
+ The linkfile returns a list of filepaths, one of which must
+ be labelled "main".
+ --]]
+ local dump in string
+ local concat in table
+ local open in io
+ local load, loadfile, assert in _ENV
+ local lk, name = assert (dofile (arg[2]))
+ local main in lk assert (main, "no main program")
+ local ld = { } -- table of loaders
+ for i, file in ipairs (lk) do
+     ld[1 + #ld] = assert (loadfile (file))
+ end -- for
+ ld[1 + #ld] = assert (loadfile (main))
+ local chunk = { } -- table of chunks
+ local pack = "package.loaded['%s']="
+ local qfmt = "%sload %q (...);"
+ for i, func in ipairs (ld) do
+    local pre = (i < #ld) and (pack:format (name[i])) or "=> "
+    chunk[i] = qfmt:format (pre, dump (func))
+ end -- for
+ local all = assert (load (concat (chunk)))
+ local out = assert (open (arg[1], "wb"))
+ out:write (dump (all))
+ out:close ( )
+ 

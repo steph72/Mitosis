@@ -1,0 +1,41 @@
+
+local dim, !, $, sys in riscos
+
+local SKReporter = {
+  skr_prefix = { "",      -- 1 = normal
+                 "\\d",   -- 2 = green
+                 "\\G",   -- 3 = really green
+                 "\\r",   -- 4 = red
+                 "\\R"    -- 5 = absolute fail
+               }
+}
+
+local doCommand = function(cmdString)
+  local outbuf = dim(80)
+  local OS_CLI = 0x05
+  $[outbuf] = cmdString.."\0"
+  sys (OS_CLI,outbuf)
+end
+
+function SKReporter.logSimple(repString)
+  doCommand ("report "..repString)
+end
+
+function SKReporter.log(repString,logLevel)
+  local level  = logLevel or 1
+  local prefix = SKReporter.skr_prefix[level] or ""
+  SKReporter.logSimple(prefix.."\\t "..repString)
+end
+
+function SKReporter.logError(repString)
+  SKReporter.log(repString,5)
+end
+
+function SKReporter.clearLog(repString)
+  local clearOut = repString or ""
+  doCommand ("ReportClear "..clearOut)
+end
+
+error = SKReporter.logError
+
+return SKReporter

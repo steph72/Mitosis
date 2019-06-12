@@ -1,0 +1,257 @@
+-------------------------------------------------------------------------
+-- mitosis board & rules
+--
+-- this class implements the board storage, the basic board actions
+-- and the game rules. since mitosis is really simple, it's acceptable
+-- to have all of this in the same class
+-------------------------------------------------------------------------
+
+local reporter = require ("SKReporter")
+local log = reporter.log
+local clearLog = reporter.clearLog
+
+-------------------------------------------------------------------------
+-- constants
+-------------------------------------------------------------------------
+
+-- move types
+
+MIMoveJumped          = 1
+MIMoveDuplicated      = 2
+
+MIBoard = {
+
+}
+
+-- tools
+
+function abs(x)
+  if (x>=0) then
+    return x
+  else
+    return -x
+  end
+end
+
+---
+-- create a new board
+-- @param width the board width
+-- @param height the board height
+-- @return @class MIBoard object
+--
+function MIBoard:new(width,height)
+
+    local object = {
+        width=width;             -- board width
+        height=height;           -- board height
+        contents = {};           -- board contents
+        entityCount = {0,0,0,0}  -- entity count
+    }
+
+    object.entityCount[0] = 0
+
+    setmetatable(object, {__index = MIBoard})
+
+    return object
+
+end
+
+-------------------------------------------------------------------------
+-- setters & getters
+-------------------------------------------------------------------------
+
+function MIBoard:hasEmptySpaces()
+  for x = 1, self.width do
+    for y = 1, self.height do
+      if (not self:getBoardEntry(x,y)) then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+
+
+function MIBoard:entryCount(value)
+  return self.entityCount[value]
+end
+
+function MIBoard:increaseEntityCount(theValue)
+  local value = theValue or 0
+  self.entityCount[value] += 1
+end
+
+function MIBoard:decreaseEntityCount(theValue)
+  local value = theValue or 0
+  self.entityCount[value] -= 1
+end
+
+---
+-- set board entry at given position
+-- @param x x-position
+-- @param y y-position
+-- @param value board entry to be set
+--
+
+function MIBoard:setBoardEntry(x,y,value)
+  if (x>self.width or y>self.height or x<1 or y<1) then
+    err = "?!! getBoardEntry: out of bounds ("..x..","..y..")"
+    error (err, 2)
+  end
+  local oldContent = self.contents[x+(self.width*y)] or 0
+  if (oldContent) then
+    self:decreaseEntityCount(oldContent)
+  end
+  self.contents[x+(self.width*y)] = value
+  self:increaseEntityCount(value)
+end
+
+---
+-- get board entry at given position
+-- @param x x-position
+-- @param y y-position
+-- @return the board entry or nil if none
+--
+function MIBoard:getBoardEntry(x,y)
+  if (x>self.width or y>self.height or x<1 or y<1) then
+    err = "?!! getBoardEntry: out of bounds ("..x..","..y..")"
+    error (err, 2)
+  end
+  return self.contents[x+(self.width*y)]
+end
+
+-- get board's description
+function MIBoard:description()
+  local address = tostring(self)
+  local boardDump = "\nBoardDump:\n\n"
+  local x,y
+  boardDump = boardDump.."      "
+  for x = 1,self.width do
+    if (x<10) then boardDump = boardDump.." " end
+    boardDump = boardDump.." "..x
+  end
+  boardDump = boardDump.."\n\n"
+  for y = 1,self.height do
+    if (y<10) then boardDump = boardDump.." " end
+    boardDump = boardDump.."  "..y.."  "
+    for x = 1,self.width do
+      if (self:getBoardEntry(x,y)) then
+        if (self:getBoardEntry(x,y)==1) then
+          boardDump = boardDump.."  1"
+        else
+          boardDump = boardDump.."  2"
+        end
+        -- boardDump = boardDump.." "..self:getBoardEntry(x,y)
+      else
+        boardDump = boardDump.."   "
+      end
+
+    end
+    boardDump = boardDump.."\n"
+  end
+
+  return "MIBoard "..address.." width:"..self.width.." height:"..self.height.."\n"..boardDump
+end
+
+
+-------------------------------------------------------------------------
+-- board actions
+-----------------------------------------------------------------------
+
+---
+-- infect surrounding entities if possible
+-- @param x x-position
+-- @param y y-position
+-- @param infectDelegate the delegate to be used
+-- uses delegate if infection occurs
+
+function MIBoard:infect(x,y,infectDelegate)
+  local infectingEntity = self:getBoardEntry(x, y)
+  local entityToInfect, xpos, ypos
+
+  -- loop over surrounding entities
+  for xpos = x-1, x+1 do
+    for ypos = y-1, y+1 do
+
+      -- check if we have valid coordinates
+      if (xpos>0 and ypos >0 and ypos<=self.height and xpos <=self.width) then
+
+        -- analyze entity there.
+        -- if it's there, and it's not ourselves -> infect it already!
+        entityToInfect = self:getBoardEntry(xpos,ypos)
+
+        if (entityToInfect and entityToInfect ~= infectingEntity) then
+
+          self:setBoardEntry(xpos, ypos, infectingEntity)
+
+          -- inform callback if we have one
+          if (infectDelegate) then
+            infectDelegate:entityDidInfect(xpos,ypos,entityToInfect,infectingEntity)
+          end
+
+        end -- of can infect check
+      end -- of valid coord check
+    end -- of ypos loop
+  end -- of xpos loop
+
+end
+
+---
+-- move entity on board
+-- @param x1 old x position
+-- @param y1 old y position
+-- @param x2 new x position
+-- @param y2 new y position
+-- @param moveDelegate the move delegate to be used
+-- @param infectDelegate the infect delegate to be used
+--
+function MIBoard:moveEntity(x1,y1,x2,y2,moveDelegate,infectDelegate)
+
+    local entityAtSource, entityAtDestination
+    local xDistance, yDistance
+    local moveType
+
+    xDistance = abs(x1 - x2)
+    yDistance = abs(y1 - y2)
+
+    -- distance sanity check
+    if ((xDistance>2 or yDistance>2) or (xDistance==0 and yDistance==0)) then
+        -- can't move entity further than 2 or onto itself
+        return false
+    end
+
+    entityAtSource = self:getBoardEntry(x1,y1)
+    entityAtDestination = self:getBoardEntry(x2,y2)
+
+    if (entityAtDestination) then
+        -- can't move onto occupied spot
+        return false
+    end
+
+    -- set entity at new location
+    self:setBoardEntry(x2, y2, entityAtSource)
+
+    -- if jumping: remove entity at old location
+    if (xDistance>1 or yDistance>1) then
+        self:setBoardEntry(x1,y1,MIBoardEntryNone)
+        moveType = MIMoveJumped
+    else
+        moveType = MIMoveDuplicated
+    end
+
+    -- do move callback
+    if (moveDelegate) then
+        moveDelegate:entityDidMove(x1,y1,x2,y2,entityAtSource,moveType)
+        -- moveCallback(x1,y1,x2,y2,moveType)
+    end
+
+    -- do infect for new location
+    self:infect(x2,y2,infectDelegate)
+
+    return true
+
+end
+
+return MIBoard
+

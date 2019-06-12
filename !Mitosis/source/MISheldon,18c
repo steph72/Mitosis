@@ -1,0 +1,186 @@
+-- MISheldon
+-- computer player module for Mitosis
+
+local log in (require("SKReporter"))
+
+MISheldon = {}
+
+---
+-- intialize sheldon for playing on the given board
+--
+
+function MISheldon:new(board,delegate)
+  local object = {
+    board = board;
+    delegate = delegate or false;
+    useRecursion = false; -- experimental only, use at your own risk
+  }
+  setmetatable(object, {__index = MISheldon})
+  return object
+end
+
+function MISheldon:isValidPosition(x,y)
+  return (x>=1 and y>=1 and x<=self.board.width and y<=self.board.height)
+end
+
+function MISheldon:isFree(x,y)
+  return (self.board:getBoardEntry(x,y)==nil)
+end
+
+---
+-- find possible destinations for a move
+
+function MISheldon:possibleDestinationsForMoveStartingAt(sourceX,sourceY)
+  local result = {}
+  local x,y
+
+  for x = -2, 2 do
+    for y = -2, 2 do
+      destX = sourceX+x
+      destY = sourceY+y
+      if (self:isValidPosition(destX,destY) and self:isFree(destX,destY)) then
+        table.insert(result,{x=destX,y=destY})
+      end
+    end
+  end
+
+  return result
+
+end
+
+
+---
+-- find possible locations for a move
+
+function MISheldon:possibleMovesForEntry(pEntry)
+  local x,y
+  local locations = {}
+  -- print ("getting possible moves for entry "..pEntry.." in board "..tostring(self.board))
+  for x = 1, self.board.width do
+    for y = 1, self.board.height do
+      local currentEntry = self.board:getBoardEntry(x,y)
+      if (currentEntry == pEntry) then
+        -- print ("x: "..x.." y: "..y.." locations:  "..#locations)
+        local locEntry =
+          { start = {x=x,y=y},
+            destinations = self:possibleDestinationsForMoveStartingAt(x,y) }
+        table.insert(locations,locEntry)
+      end
+    end
+  end
+  return locations
+end
+
+
+function MISheldon:tryMoveAndGetScore(theMove)
+
+  local theOtherBoard = MIBoard:new(self.board.width,self.board.height)
+  local otherEntity
+  local thisEntity = self.board:getBoardEntry(theMove.from.x,theMove.from.y)
+
+  if (thisEntity==2) then
+    otherEntity = 1
+  else
+    otherEntity = 2
+  end
+  -- print ("created new board "..tostring(theOtherBoard))
+  -- print ("the other entity is "..otherEntity)
+  for x = 1,self.board.width do
+    for y = 1,self.board.height do
+      theOtherBoard:setBoardEntry(x,y,self.board:getBoardEntry(x,y))
+    end
+  end
+  --print ("the other board is "..tostring(theOtherBoard))
+  --print (theOtherBoard:description())
+
+  local theOtherSheldon = MISheldon:new(theOtherBoard,self.delegate)
+  -- make the move
+  theOtherBoard:moveEntity(theMove.from.x,theMove.from.y,
+                           theMove.to.x,theMove.to.y)
+  --print ("this board after move:")
+  --print (self.board:description())
+
+  -- look what the other sheldon has to say
+  local aMove = theOtherSheldon:bestMoveForPlayer(otherEntity,true)
+
+  --print(self.board:description())
+
+  return aMove.score
+
+end
+
+---
+-- calculate best move
+
+function MISheldon:scoreForMoving(x0,y0,x1,y1,stopRecursion)
+
+    local movingEntity = self.board:getBoardEntry(x0,y0)
+    -- log("score for moving entity "..movingEntity)
+    local xDistance = abs(x0-x1)
+    local yDistance = abs(y0-y1)
+    local x,y,destX,destY
+    local score = 1
+    for x = -1,1 do
+      for y = -1,1 do
+        destX = x1+x
+        destY = y1+y
+        if (self:isValidPosition(destX,destY)) then
+          if ((self.board:getBoardEntry(destX,destY)~=movingEntity)
+              and not (self:isFree(destX,destY))) then
+            score = score + 1
+            -- infecting one entity is worth "1"
+          end
+        end
+      end
+    end
+    if (score>4) then score += 4 end
+    if (xDistance>=2 or yDistance>=2) then
+      score = score - 3
+    end
+    if (stopRecursion or not self.useRecursion) then
+      --print ("board "..tostring(self.board).." stopping recursion")
+      return score
+    else
+      local tempMove = {from = {x=x0, y=y0}, to = {x=x1, y=y1}}
+      local scoreModifier = self:tryMoveAndGetScore(tempMove)
+      log ("recursive score modifier is "..scoreModifier)
+      score = score - scoreModifier
+    end
+    return score
+end -- of scoreForMoving
+
+
+function MISheldon:bestMoveForPlayer(playerEntry,stopRecursion)
+
+  local currentScore, currentHighScore, bestMove
+  self.allMoves = self:possibleMovesForEntry(playerEntry)
+  local currentSource, currentDestination, startX, startY, destX, destY
+
+  bestMove = {}
+  currentHighScore = -100
+
+  for _,currentSource in pairs(self.allMoves) do
+    startX = currentSource.start.x
+    startY = currentSource.start.y
+    for _,currentDestination in pairs(currentSource.destinations) do
+      destX = currentDestination.x
+      destY = currentDestination.y
+      --print ("calling from board "..tostring(self.board))
+      currentScore = self:scoreForMoving(startX,startY,destX,destY,stopRecursion)
+      --log ("got score "..currentScore)
+      -- log (startX..","..startY.." > "..destX..","..destY.." : "..currentScore.."; ",2)
+      if (currentScore>currentHighScore) then
+        --log ("i1")
+        currentHighScore = currentScore
+        bestMove = { from = {x=startX,y=startY}, to = {x=destX,y=destY}, score = currentHighScore }
+      end
+    end
+  end
+  --log("returning move")
+  bestMove.comment = "ms "..currentHighScore
+
+  return bestMove
+
+end
+
+return MISheldon

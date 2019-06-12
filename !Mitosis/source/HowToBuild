@@ -1,0 +1,9 @@
+To run Mitosis directly from the sources:
+1. make this directory the working directory
+2. make sure the filer has seen the !Mitosis app (it should have, since you're here)
+3. make sure you have RiscLua 5.70 installed and seen by the filer
+4. double click "MIMain"
+
+To build Mitosis as standalone application:
+Follow steps 2-3 from above, and then double click "build". This will - if everything goes well - create a new !RunImage file which can be placed in the app folder.
+

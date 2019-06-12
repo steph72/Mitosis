@@ -1,0 +1,520 @@
+#! lua
+
+-- mitosis / RISC OS
+-- written in 2013 by stephan kleinert
+
+-- requires and global stuff
+
+require "MIBoard"
+require "MISheldon"
+
+local log,clearLog  in (require "SKReporter")
+local tbox, msglist in (require "wimp.tbox")
+local $,!,dim,sys   in riscos
+
+local app$dir = os.getenv "MitosisLua$Dir"
+local appversion$ = dim "1.0 (11/11/2018)\0"
+local textsize = 64
+local textbuf = dim (textsize)
+local showCmd = "filer_run <MitosisLua$Dir>.%s"
+
+
+-- SWIs
+local OS_ReadMonotonicTime   = 0x42
+local Wimp_RedrawWindow      = 0x400c8
+local Wimp_ForceRedraw       = 0x400d1
+local Wimp_PollIdle          = 0x400e1
+local Toolbox_CreateObject   = 0x44ec0
+local Toolbox_DeleteObject   = 0x44ec1
+local Toolbox_ShowObject     = 0x44ec3
+local Toolbox_HideObject     = 0x44ec4
+local Toolbox_ObjectMiscOp   = 0x44ec6
+
+-- toolbox object operations
+local Window_GetWimpHandle   = 0
+local Menu_SetFade           = 2
+local Window_GetToolBars     = 19
+local Gadget_SetFlags        = 65
+local Gadget_GetIconList     = 68
+local Gadget_GetBBox         = 72
+local OptionButton_GetState  = 197
+local WritableField_GetValue = 513
+local Slider_SetValue        = 576
+local Slider_SetBound        = 578
+local DisplayField_SetValue  = 448
+local WritableField_SetValue = 512
+local WritableField_GetValue = 513
+local Button_SetValue        = 962
+
+-- main game object
+
+local game = {
+
+   gameTask = nil,       -- toolbox task for the game
+   board = nil,          -- here goes the board
+   sheldon = nil,        -- mitosis AI object
+   selectedField = nil,  -- currently selected field index
+   selectedCoords = nil, -- currently selected coordinates
+
+   w_main = nil,         -- toolbox window handle for main window
+   w_main_wimp = nil,    -- wimp window handle for main window
+
+   w_toolbar = nil,      -- toolbox handle for main window toolbar
+   w_gameOver = nil,     -- toolbox handle for game over window
+   w_startNewGame = nil, -- toolbox handle for start new game window
+
+   currentPlayer  = 1,     -- the current player
+   sheldonSpeed   = 1,     -- sheldon wait poll divisor
+   ai = false,             -- whether to use the ai
+   gameInProgress = false, -- whether a game is in progress
+
+   names = {}              -- player names
+}
+
+----- board drawing functions -------------------------------------------------
+
+-- set status line
+function game:setStatus(statusString)
+  $[textbuf] = statusString.."\0"
+  sys (Toolbox_ObjectMiscOp,0,self.w_toolbar,Button_SetValue,0,textbuf)
+end
+
+-- set statistcs
+function game:setStatistics()
+
+  local allEntriesCount = self.board:entryCount(1) + self.board:entryCount(2)
+  sys (Toolbox_ObjectMiscOp,
+       7,                     -- set upper and lower bound
+       self.w_toolbar,        -- in toolbar window
+       Slider_SetBound,       -- oh well
+       1,                     -- on gadget #1 (slider)
+
+       -- lower bound and upper bound:
+       -- the toolbox manual has it THE WRONG WAY ROUND! AARGH!
+
+       0,                     -- lower bound
+       allEntriesCount,       -- upper bound
+       1)                     -- step size
+
+  local redCount = self.board:entryCount(1)
+  sys (Toolbox_ObjectMiscOp,
+       0,                     -- no flags needed here
+       self.w_toolbar,        -- toolbar window
+       Slider_SetValue,       -- set slider value
+       1,                     -- on gadget #1 (slider)
+       redCount)              -- with number of red entries
+end
+
+-- set entity on board (similar to the model function)
+function game:setEntityAtPosition(x,y,e,selected, redraw)
+  local gadgetNumber = x-1 + ((y-1)*7)
+  local boundingBoxBuffer = dim(16)
+  local entityString = tostring(e)
+  if (selected) then
+    entityString = entityString.."sel"
+  end
+  $[textbuf] = entityString..'\0'
+  sys (Toolbox_ObjectMiscOp,0,self.w_main,Button_SetValue,gadgetNumber,textbuf)
+
+  if (redraw) then
+    -- get bounding box
+    sys (Toolbox_ObjectMiscOp,0,self.w_main,Gadget_GetBBox,gadgetNumber,boundingBoxBuffer)
+    local minX = ![boundingBoxBuffer]
+    local minY = ![boundingBoxBuffer+4]
+    local maxX = ![boundingBoxBuffer+8]
+    local maxY = ![boundingBoxBuffer+12]
+    -- log ("bounding box: "..minX..", "..minY..", "..maxX..", "..maxY)
+    sys(Wimp_ForceRedraw,self.w_main_wimp,minX,minY,maxX,maxY)
+  end
+
+end
+
+-- set selected state for entry at x,y
+function game:setSelectedState(x,y,selected)
+  local shouldSelect = selected or false
+  local entity = self.board:getBoardEntry(x,y) or 0
+  local gadgetNumber = x-1 + ((y-1)*7)
+  self:setEntityAtPosition(x,y,entity,selected,1)
+end
+
+-- synchronize board with the GUI
+function game:synchronizeBoard(refresh)
+  local x,y,e
+  for x=1,self.board.width do
+    for y=1,self.board.height do
+      e = (self.board:getBoardEntry(x,y) or 0)
+      self:setEntityAtPosition(x,y,e,false,true)
+    end
+  end
+  self:setStatistics()
+end
+
+-- wait a specified amount of time
+function game:wait(timeVal,alreadyWaited)
+  local subTime = alreadyWaited or 0
+  local time = timeVal/self.sheldonSpeed
+  if (time-subTime>0) then
+    local waitTime = sys(OS_ReadMonotonicTime)+time-subTime
+    local mask = 932210 -- mask everything but Null_Reason
+    sys (Wimp_PollIdle,mask,self.b,waitTime)
+  end
+end
+
+-- show endgame
+function game:showEndgame()
+
+  if (not self.w_gameOver) then
+    self.w_gameOver = sys (Toolbox_CreateObject,0,"gameOverW\0")
+  end
+
+  sys (Toolbox_ShowObject,0,self.w_gameOver,0,0,0,-1)
+  local p1Name = self.names[1]
+  local p2Name = self.names[2]
+  local p1Score = self.board:entryCount(1)
+  local p2Score = self.board:entryCount(2)
+  local p1Text = dim(p1Name.." has "..p1Score.." alive organisms.\0")
+  local p2Text = dim(p2Name.." has "..p2Score.." alive organisms.\0")
+  local wText
+  if (p1Score>p2Score) then
+    wText = dim(p1Name.." wins!\0")
+  elseif (p2Score>p1Score) then
+    wText = dim(p2Name.." wins!\0")
+  else
+    wText = dim("Unbelievable! It's a tie!!!\0")
+  end
+
+  sys (Toolbox_ObjectMiscOp,0,self.w_gameOver,Button_SetValue,1,p1Text)
+  sys (Toolbox_ObjectMiscOp,0,self.w_gameOver,Button_SetValue,2,p2Text)
+  sys (Toolbox_ObjectMiscOp,0,self.w_gameOver,Button_SetValue,3,wText)
+
+end
+
+-- refresh current player and run AI if needed
+function game:changeTurn()
+
+  self.currentPlayer +=1
+
+  if (self.currentPlayer >2) then
+    self.currentPlayer = 1
+  end
+
+  self:setStatus("It's your turn, "..self.names[self.currentPlayer])
+
+  -- look if we can continue
+
+  log("checking entry count...")
+  local t1 = sys("OS_ReadMonotonicTime")
+  local hasEmptySpaces = self.board:hasEmptySpaces()
+  local t2 = sys("OS_ReadMonotonicTime")
+  log("checking took "..t2-t1.." millis",2)
+
+  if (not self.board:hasEmptySpaces()) then
+    self:showEndgame() -- no more empty spaces
+  elseif (self.board:entryCount(1)==0 or self.board:entryCount(2)==0) then
+    self:showEndgame() -- someone lost all entities
+  else
+
+    -- yes, we can move
+    if (self.currentPlayer == 2 and self.ai) then
+      self:doSheldon(2)
+    end
+
+  end
+
+end
+
+-- delegates for the board
+
+function game:entityDidMove(x1,y1,x2,y2,entity,moveType)
+  -- log("entityDidMove delegate")
+  log(string.format("%d, %d to %d, %d; e %d, type %d",x1,y1,x2,y2,entity,moveType))
+  if (moveType==1) then -- jumped
+    self:setEntityAtPosition(x1,y1,0,false,true)
+    self:setEntityAtPosition(x2,y2,entity,false,true)
+  else -- moved
+    self:setEntityAtPosition(x2,y2,entity,false,true)
+    self:setStatistics()
+  end
+end
+
+function game:entityDidInfect(x,y,infected,infecting)
+  log(string.format("%d infected %d at %d, %d",infected,infecting,x,y))
+  self:setEntityAtPosition(x,y,infecting)
+  self:setStatistics()
+end
+
+function game:doSheldon(pEntity)
+
+  log ("calling sheldon")
+  local t1 = sys("OS_ReadMonotonicTime")
+  self:setStatus("Sheldon: \"Hmm, let me think...\"")
+  self:wait(5) -- force ui to update
+  local sheldonMove = self.sheldon:bestMoveForPlayer(pEntity)
+  local t2 = sys("OS_ReadMonotonicTime")
+  log ("Sheldon took "..t2-t1.." millis",2)
+
+  if (not sheldonMove.from) then
+    self.gameTask:report("Sheldon: \"I skip\"")
+  else
+
+    -- select source coords and display
+    self:wait(100)
+    -- self:setStatus("Sheldon: \""..sheldonMove.comment.."\"")
+    self:setSelectedState(sheldonMove.from.x,sheldonMove.from.y,true)
+    self:wait(100)
+
+    -- select destination coords and display
+    self:setSelectedState(sheldonMove.to.x,sheldonMove.to.y,true)
+    self:wait(50)
+
+    -- do move
+    self:setSelectedState(sheldonMove.to.x,sheldonMove.to.y,false)
+
+    self.board:moveEntity(sheldonMove.from.x,
+                          sheldonMove.from.y,
+                          sheldonMove.to.x,
+                          sheldonMove.to.y,
+                          self,
+                          self)
+
+    self:setSelectedState(sheldonMove.from.x,sheldonMove.from.y,false)
+
+    self:changeTurn()
+
+  end
+
+end
+
+
+-- set selected
+function game:doGadgetClick(gadgetNumber)
+
+  local destCoords = { x = (gadgetNumber%7)+1, y = (gadgetNumber/7)+1 }
+
+  if (self.selectedField==nil) then
+    -- nothing selected? let's see if we can select it
+    local entity = self.board:getBoardEntry(destCoords.x,destCoords.y) or 0
+    if (entity==self.currentPlayer) then
+      -- select it
+      self.selectedField  = gadgetNumber
+      self.selectedCoords = destCoords
+      self:setEntityAtPosition(destCoords.x,destCoords.y,entity,1)
+      self:setStatus("Cell selected")
+    else
+      if (entity==0) then
+        self:setStatus("Please select source first")
+      else
+        self:setStatus("Sorry, that's not one of yours")
+      end
+    end
+  elseif (self.selectedField==gadgetNumber) then
+    -- field selected? unselect it
+    self.selectedField  = nil
+    self.selectedCoords = destCoords
+    local entity = self.board:getBoardEntry(destCoords.x,destCoords.y)
+    self:setEntityAtPosition(destCoords.x,destCoords.y,entity,false,true)
+    self:setStatus("Pick cell to move...")
+  else
+    -- another field selected? it's probably a move...
+    local entity = self.board:getBoardEntry(destCoords.x,destCoords.y) or 0
+    if (entity==0) then -- if it's free, move it!
+      if ( self.board:moveEntity(self.selectedCoords.x,
+                                 self.selectedCoords.y,
+                                 destCoords.x,
+                                 destCoords.y,
+                                 self,
+                                 self)) then
+        -- unselect previous selection
+        self:setSelectedState(self.selectedCoords.x,
+                              self.selectedCoords.y,false)
+        self.selectedField = nil
+        self:wait(50)
+        self:changeTurn()
+      else
+        self:setStatus("can't get there from here!")
+      end
+    else
+      self:setStatus("space already occupied!")
+    end
+  end
+
+end
+
+
+function game:synchronizeSetupOptions()
+  local names = {}
+  local name1buf = dim(80)
+  local name2buf = dim(80)
+  log("start new game is "..self.w_startNewGame)
+  sys(Toolbox_ObjectMiscOp,0,self.w_startNewGame,WritableField_GetValue,1,name1buf,80)
+  sys(Toolbox_ObjectMiscOp,0,self.w_startNewGame,WritableField_GetValue,3,name2buf,80)
+  names[1] = $[name1buf]
+  names[2] = $[name2buf]
+  self.names = names
+  local sheldonOpt = sys(Toolbox_ObjectMiscOp,0,self.w_startNewGame,OptionButton_GetState,4)
+  self.ai = (sheldonOpt==1)
+  if (self.ai) then
+    sys(Toolbox_ObjectMiscOp,0,self.w_startNewGame,WritableField_SetValue,3,"Sheldon\0")
+    sys(Toolbox_ObjectMiscOp,0,self.w_startNewGame,Gadget_SetFlags,3,2^31)
+  else
+    sys(Toolbox_ObjectMiscOp,0,self.w_startNewGame,Gadget_SetFlags,3,0)
+  end
+end
+
+
+----- maintenance methods -----------------------------------------------------
+
+-- setup a new board
+function game:setupBoard()
+  log ("setting up board & sheldon")
+  local boardSize = 7
+  self.board =   MIBoard:new(boardSize,boardSize)
+  self.sheldon = MISheldon:new(self.board,self)
+  self.board:setBoardEntry(1,1,1)
+  self.board:setBoardEntry(1,boardSize,1)
+  self.board:setBoardEntry(boardSize,boardSize,2)
+  self.board:setBoardEntry(boardSize,1,2)
+  self.currentPlayer=1
+end
+
+-- setup the whole application
+
+function game:setupGame()
+
+  self.b = dim (256) -- block for wimp poll stuff
+
+  log("setting up toolbox")
+
+  self.gameTask = tbox("MitosisLua")
+  self.gameTask.b = dim (512)
+
+  self.gameTask.appdir = app$dir..'\0'
+  self.gameTask.tbox_events = msglist { }
+  self.gameTask.mask = 1 + (3<<4) + (7<<11) + (7<<22);
+
+  self.gameTask.handler[6] = function(eventObject) -- wimp mouse click handler
+    local b in eventObject
+    local buttonValue  = ![b+8]
+    local windowHandle = ![b+12]
+    local iconHandle   = ![b+16]
+    if (iconHandle>=0 and
+        windowHandle==self.w_main_wimp and
+        buttonValue==4) then
+      self:doGadgetClick(iconHandle)
+    end
+  end
+
+  --                    ===========================
+  --                    == toolbox event handler ==
+  --                    ===========================
+
+  local event = self.gameTask.handler.tbox
+
+  event[1] = \ (eventObject) => true end -- quit from iconbar menu
+  event[2] = \ (eventObject) sys (0x400de, showCmd:format "!Help") end
+
+  event[0x101] = function(eventObject)   -- menu entry: skip this move
+    self:changeTurn()
+  end
+
+  event[0x205] = function(eventObject)   -- sheldon option clicked
+    self:synchronizeSetupOptions()
+  end
+
+  event[0x350] = function(eventObject)   -- play again button pressed
+    self:setupBoard()
+    sys (Toolbox_HideObject,0,self.w_gameOver)
+    self:synchronizeBoard(true)
+  end
+
+  event[0x351] = function(eventObject)   -- gimme a break button pressed
+    sys (Toolbox_HideObject,0,self.w_gameOver)
+    sys (Toolbox_HideObject,0,self.w_main)
+    self.w_main = nil
+    self.gameInProgress = false
+    self:setupBoard()
+  end
+
+  event[0x501] = function(eventObject)   -- MainWindow about to be shown
+
+    if (self.w_main) then
+      return -- already registered & running-> nothing to do
+    end
+
+    -- registering the main game window
+
+    local id in eventObject
+    local wind = ![id+16]
+
+    -- we have the toolbox window handle
+    -- but we still need the stupid wimp window handle
+
+    local wimpHandle = sys (Toolbox_ObjectMiscOp,0,wind,Window_GetWimpHandle)
+    local toolbar    = sys (Toolbox_ObjectMiscOp,1,wind,Window_GetToolBars)
+    log ("toolbar is "..toolbar)
+    self.w_main = wind
+    self.w_main_wimp = wimpHandle
+    self.w_toolbar = toolbar
+    log("registered main window: "..wind.." (tbox); "..wimpHandle.." (wimp)")
+
+    self:synchronizeSetupOptions()
+    self:synchronizeBoard()
+    self:setStatistics()
+    self:setStatus("Welcome to Mitosis. It's your turn, "..self.names[self.currentPlayer])
+    self.gameInProgress = true
+  end
+
+  event[0x502] = function(eventObject)   -- start new game window a.t.b.s.
+    local id in eventObject
+    local wind = ![id+16]
+    self.w_startNewGame = wind
+    self:synchronizeSetupOptions()
+    log("registered start new game window "..wind)
+  end
+
+  event[0x503] = function(eventObject)   -- click on iconbar
+    if (self.w_main) then
+      sys (Toolbox_ShowObject,0,self.w_main,0,0,0,-1)
+    else
+      sys (Toolbox_ShowObject,0,self.w_startNewGame,0,0,0,-1)
+    end
+  end
+
+  event[0x606] = function(eventObject) -- ibar menu about to be shown
+    local id in eventObject
+    log("showMenu")
+    if (self.gameInProgress) then
+      sys (Toolbox_ObjectMiscOp, 0, ![id+16], Menu_SetFade, 3, 1)
+      sys (Toolbox_ObjectMiscOp, 0, ![id+16], Menu_SetFade, 4, 0)
+    else
+      sys (Toolbox_ObjectMiscOp, 0, ![id+16], Menu_SetFade, 3, 0)
+      sys (Toolbox_ObjectMiscOp, 0, ![id+16], Menu_SetFade, 4, 1)
+    end
+  end
+
+  event[0x607] = function(eventObject) -- cancel current game clicked
+    sys (Toolbox_HideObject,0,self.w_main)
+    self.w_main = nil
+    self.gameInProgress = false
+    self:setupBoard()
+  end
+
+  event[0x82b40] = function(eventObject) -- ProgInfo_AboutToBeShown
+    local id in eventObject
+    sys (Toolbox_ObjectMiscOp, 0, ![id+16], 1, appversion$)
+  end
+
+end -- of function setupGame()
+
+function game:initAndStart()
+  clearLog("Starting Mitosis")
+  self:setupGame()
+  if (self.gameTask:init()) then
+    log("GameTask initialized",3)
+    self:setupBoard()
+    log("Running game task",3)
+    self.gameTask:run()
+  end
+end
+
+game:initAndStart()

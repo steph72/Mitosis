@@ -1,0 +1,5 @@
+Set MitosisLua$Dir <Obey$Dir>
+IconSprites <MitosisLua$Dir>.!Sprites
+ifthere  <MitosisLua$Dir>.Modules then Obey <MitosisLua$Dir>.Modules
+WimpSlot -min 240k -max 240k
+do <MitosisLua$Dir>.!RunImage
