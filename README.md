@@ -2,7 +2,7 @@
 
 ![Screenshot](/screenshot.jpg)
 
-"Mitosis" is an attax clone for RISC OS, written in 100% Lua, using Gavin Wraith's excellent RiscLua package.
+"Mitosis" is an [ataxx](https://en.wikipedia.org/wiki/Ataxx) clone for RISC OS, written in 100% Lua, using Gavin Wraith's excellent RiscLua package.
 
 Perhaps of interest is the fact that Mitosis uses the RISC OS Toolbox (as opposed to event-based WIMP programming) by way of some nice toolbox wrapper classes. 
 
